@@ -1,0 +1,22 @@
+# Python
+__pycache__/
+*.py[cod]
+*.venv/
+venv/
+
+# Node
+node_modules/
+.env
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Docker
+*.tar
+
+# Build output
+/dist/
+build/
+
+# Misc
+.DS_Store
