@@ -2,9 +2,15 @@ version: '3.8'
 services:
   frontend:
     build: ./frontend
+#    volumes:
+#      - ./frontend:/app      # ホスト→コンテナ
+#      - /app/node_modules    # node_modules はコンテナ側を優先
     ports:
-      - '3000:3000'
+      - "3000:3000"
   backend:
     build: ./backend
     ports:
       - '8000:8000'
+    environment:
+      - GEMINI_API_KEY=${GEMINI_API_KEY}
+
