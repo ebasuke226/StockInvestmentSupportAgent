@@ -2,6 +2,7 @@ import { useState } from "react";
 import axios from "axios";
 
 export const Home = () => {
+  console.log("[Home] start");
   const [ticker, setTicker] = useState("");
   const [result, setResult] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
@@ -12,9 +13,12 @@ export const Home = () => {
     setError(null);
     setResult(null);
     try {
+      console.debug("[handleSearch] calling API", { url: "/api/stocks/analyze", payload: { ticker } });
       const res = await axios.post<{ text: string }>("/api/stocks/analyze", { ticker });
+      console.debug("[handleSearch] API response", res.data);
       setResult(res.data.text);
     } catch (e: any) {
+      console.error("[handleSearch] API error", e);
       setError(e.response?.data?.detail || e.message);
     } finally {
       setLoading(false);

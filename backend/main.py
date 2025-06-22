@@ -1,6 +1,7 @@
 import os
 import logging
 from fastapi import FastAPI
+from routers.stocks import router as stocks_router   # ← これを追加
 
 # ロガー設定
 logging.basicConfig(
@@ -10,6 +11,7 @@ logging.basicConfig(
 logger = logging.getLogger("main")
 
 app = FastAPI()
+app.include_router(stocks_router, prefix="/api")
 
 @app.on_event("startup")
 async def startup_event():

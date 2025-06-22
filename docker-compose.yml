@@ -1,16 +1,24 @@
 version: '3.8'
 services:
+  # ① Frontend のビルドステージのみ動かして dist をボリュームに出力
   frontend:
-    build: ./frontend
-#    volumes:
-#      - ./frontend:/app      # ホスト→コンテナ
-#      - /app/node_modules    # node_modules はコンテナ側を優先
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
     ports:
       - "3000:3000"
+#    volumes:
+#      - ./frontend:/app
+#      - /app/node_modules
+#    command: npm run dev
+
+  # ② Backend (FastAPI)
   backend:
     build: ./backend
     ports:
-      - '8000:8000'
+      - "8000:8000"
     environment:
       - GEMINI_API_KEY=${GEMINI_API_KEY}
 
+volumes:
+  frontend-dist: {}
