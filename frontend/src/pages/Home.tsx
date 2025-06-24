@@ -1,24 +1,45 @@
 import { useState } from "react";
 import axios from "axios";
 
+type StockInfo = {
+  code: string;
+  name: string;
+  price: number;
+  report_date: string;
+};
+
+type ApiResponse = {
+  data?: StockInfo[];
+  message?: string;
+  instructions?: any;
+  detail?: string;
+};
+
 export const Home = () => {
-  console.log("[Home] start");
   const [ticker, setTicker] = useState("");
-  const [result, setResult] = useState<string | null>(null);
+  const [stocks, setStocks] = useState<StockInfo[] | null>(null);
+  const [message, setMessage] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   const handleSearch = async () => {
     setLoading(true);
     setError(null);
-    setResult(null);
+    setMessage(null);
+    setStocks(null);
     try {
-      console.debug("[handleSearch] calling API", { url: "/api/stocks/analyze", payload: { ticker } });
-      const res = await axios.post<{ text: string }>("/api/stocks/analyze", { ticker });
-      console.debug("[handleSearch] API response", res.data);
-      setResult(res.data.text);
+      const res = await axios.post<ApiResponse>(
+        "/api/stocks/analyze",
+        { ticker }
+      );
+      if (res.data.data) {
+        setStocks(res.data.data);
+      } else if (res.data.message) {
+        setMessage(res.data.message);
+      } else {
+        setError("Unexpected response format");
+      }
     } catch (e: any) {
-      console.error("[handleSearch] API error", e);
       setError(e.response?.data?.detail || e.message);
     } finally {
       setLoading(false);
@@ -45,10 +66,21 @@ export const Home = () => {
         </button>
       </div>
       {error && <p className="text-red-500 mb-2">エラー: {error}</p>}
-      {result && (
-        <div className="border p-3 rounded bg-gray-50">
-          <h2 className="font-semibold mb-1">分析結果</h2>
-          <p>{result}</p>
+      {message && <pre className="bg-gray-100 p-3 rounded mb-2 whitespace-pre-wrap">{message}</pre>}
+      {stocks && (
+        <div className="space-y-3">
+          {stocks.map((stock) => (
+            <div
+              key={stock.code}
+              className="border p-3 rounded bg-gray-50"
+            >
+              <h2 className="font-semibold">
+                {stock.code} - {stock.name}
+              </h2>
+              <p>株価: {stock.price}</p>
+              <p>次回決算発表日: {stock.report_date}</p>
+            </div>
+          ))}
         </div>
       )}
     </div>
