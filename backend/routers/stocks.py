@@ -1,12 +1,14 @@
 import os
 import re
 import logging
+import pathlib
 import json
 import pandas as pd
+import requests
+from bs4 import BeautifulSoup
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
-import google.generativeai as genai
 
 # ロガー設定
 logger = logging.getLogger("stocks_router")
@@ -14,97 +16,149 @@ logger.setLevel(logging.DEBUG)
 
 router = APIRouter(prefix="/stocks", tags=["stocks"])
 
-class TickerRequest(BaseModel):
-    ticker: str
 
-class StockInfo(BaseModel):
+# --- 年初来安値ランキング用モデル ---
+class YearLowRecord(BaseModel):
+    rank: int
+    name: str
+    code: str
+    market: str
+    current_price: float
+    year_low_price: float
+    year_low_date: str
+    prev_close: float
+
+class YearLowResponse(BaseModel):
+    data: list[YearLowRecord]
+
+@router.get("/yearlow", response_model=YearLowResponse)
+async def get_yearlow_ranking():
+    logger.debug("Fetch year-to-date low ranking")
+    url = "https://finance.yahoo.co.jp/stocks/ranking/yearToDateLow?market=all"
+    resp = requests.get(url, timeout=10)
+    if resp.status_code != 200:
+        logger.error(f"Failed to fetch ranking page: {resp.status_code}")
+        raise HTTPException(status_code=502, detail="ランキングページの取得に失敗しました。")
+
+    soup = BeautifulSoup(resp.text, "html.parser")
+    card_div = soup.find("div", class_=re.compile(r"StocksContents__group.*wide__3qa3"))
+    if not card_div:
+        logger.error("Ranking table container not found")
+        raise HTTPException(status_code=500, detail="ランキングテーブルの解析に失敗しました。")
+    table = card_div.find("table")
+    rows = table.find_all("tr")[1:]
+    if not rows:
+        logger.error("No rows found in ranking table")
+        raise HTTPException(status_code=500, detail="ランキングデータが見つかりませんでした。")
+
+    records: list[dict] = []
+
+    def span_text(parent, cls, idx=0):
+        ss = parent.find_all("span", class_=cls)
+        return ss[idx].get_text(strip=True) if len(ss) > idx else ""
+
+    for tr in rows:
+        row = BeautifulSoup(str(tr), "html.parser")
+        rank_tag = row.find("th")
+        rank = int(rank_tag.get_text(strip=True)) if rank_tag else 0
+        name = row.find("a").get_text(strip=True)
+        lis = row.find_all("li")
+        code   = lis[0].get_text(strip=True)
+        market = lis[1].get_text(strip=True)
+        # 絞り込み: 東証PRM / STD / GRT のみ
+        if market not in {"東証PRM", "東証STD", "東証GRT"}:
+            continue
+
+        tds = row.find_all("td")
+        current_price   = float(span_text(tds[1], "StyledNumber__value__3rXW").replace(",", ""))
+
+        year_low_price  = float(span_text(tds[2], "StyledNumber__value__3rXW", 0).replace(",", ""))
+        year_low_date   = tds[2].find("span", class_="RankingTable__secondary__1cYU").get_text(strip=True)
+
+        prev_close      = float(span_text(tds[3], "StyledNumber__value__3rXW").replace(",", ""))
+
+        records.append({
+            "rank": rank,
+            "name": name,
+            "code": code,
+            "market": market,
+            "current_price": current_price,
+            "year_low_price": year_low_price,
+            "year_low_date": year_low_date,
+            "prev_close": prev_close,
+        })
+
+    return JSONResponse(content={"data": records})
+
+
+# --- 業種別＋時系列データ取得用モデル ---
+class CombinedRecord(BaseModel):
     code: str
     name: str
-    price: float
-    report_date: str
+    market: str
+    industry_33_category: str
+    Date: str
+    Open: float
+    High: float
+    Low: float
+    Close: float
+    Volume: int
 
-class StocksResponse(BaseModel):
-    data: list[StockInfo]
+@router.get("/industry/{ticker}", response_model=list[CombinedRecord])
+async def get_industry_details(ticker: str):
+    data_dir = pathlib.Path(__file__).parent.parent / "data"
 
-# 環境変数からキーを設定
-genai_api_key = os.getenv("GEMINI_API_KEY")
-if not genai_api_key:
-    logger.warning("GEMINI_API_KEY が設定されていません。environment を確認してください。")
-genai.configure(api_key=genai_api_key)
-
-
-def extract_json_from_text(text: str) -> dict:
-    """
-    テキストの中から最初の '{' から最後の '}' を抜き出し、
-    コメントや余分なカンマを除去したうえで JSON にデコード
-    """
-    start_idx = text.find('{')
-    end_idx = text.rfind('}') + 1
-    snippet = text[start_idx:end_idx] if start_idx != -1 and end_idx != 0 else text
-
-    snippet = re.sub(r"//.*", "", snippet)
-    snippet = re.sub(r",(\s*[}\]])", r"\1", snippet)
-    return json.loads(snippet)
-
-
-def generate_llm_response(prompt: str, model_name: str = "gemini-1.5-flash") -> str:
-    logger.debug(f"[LLM] Prompt: {prompt}")
-    response = genai.GenerativeModel(model_name).generate_content(prompt)
-    logger.debug(f"[LLM] Raw response: {response.text}")
-    return response.text
-
-
-@router.post("/analyze", response_model=StocksResponse)
-async def analyze_ticker(req: TickerRequest):
-    logger.debug(f"Analyze request received: ticker={req.ticker}")
-
-    # 1) CSV読込 (英語カラム名を指定)
-    cols_to_use = [
-        'code', 'name', 'market',
-        'industry_33_code', 'industry_33_category',
-        'industry_17_code', 'industry_17_category',
-        'scale_code', 'scale_category'
-    ]
-    df = pd.read_csv(
-        "stockList.csv",
+    # 1) 銘柄リスト読み込み
+    df_list = pd.read_csv(
+        data_dir / "stockList.csv",
         dtype=str,
+        usecols=[
+            "code","name","market",
+            "industry_33_code","industry_33_category",
+            "scale_code"
+        ],
         engine="python",
         on_bad_lines="skip",
-        usecols=cols_to_use
-    )
-    logger.debug(f"CSV loaded ({df.shape[0]} rows), columns={list(df.columns)}")
-
-    # 2) 銘柄コードでフィルタ
-    matched = df[df['code'] == req.ticker]
-    if matched.empty:
-        logger.error(f"Ticker not found: {req.ticker}")
-        raise HTTPException(status_code=404, detail="該当する銘柄コードが見つかりません。")
-
-    # 3) 業種(33) + 規模(1 or 2) フィルタ
-    industry_code = matched.iloc[0]['industry_33_code']
-    filtered = df[
-        (df['industry_33_code'] == industry_code) &
-        (df['scale_code'].isin(['1','2']))
-    ][['code','name']]
-    logger.debug(f"Filtered tickers count: {filtered.shape[0]}")
-
-    # 4) LLMプロンプト作成
-    tickers_list = filtered.to_dict(orient='records')
-    prompt = (
-        '以下の銘柄リストについて、直近の株価と次回の決算発表日をJSON形式で教えてください。\n'
-        + json.dumps(tickers_list, ensure_ascii=False)
     )
 
-    # 5) LLM呼び出し + JSON抽出 + パース
-    llm_text = generate_llm_response(prompt)
-    try:
-        records = extract_json_from_text(llm_text)
-    except json.JSONDecodeError as e:
-        logger.error(f"JSON parsing failed: {e}\nRaw response: {llm_text}")
-        raise HTTPException(status_code=500, detail="LLMの応答パースエラー: JSON形式ではありませんでした。")
+    # 対象tickerのindustry_33_code
+    row = df_list[df_list["code"] == ticker]
+    if row.empty:
+        raise HTTPException(status_code=404, detail="該当銘柄コードが見つかりません。")
+    industry = row.iloc[0]["industry_33_code"]
 
-    # 6) DataFrame化 + レスポンス
-    result_df = pd.DataFrame(records)
-    logger.debug(f"Result DataFrame columns: {list(result_df.columns)} | rows={len(result_df)}")
-    response_data = result_df.to_dict(orient='records')
-    return JSONResponse(content={'data': response_data})
+    # 2) 同じ業種(33) + 規模(1 or 2) フィルタ
+    partners = df_list[
+        (df_list["industry_33_code"] == industry) &
+        (df_list["scale_code"].isin(["1","2"]))
+    ][["code","name","market","industry_33_category"]]
+    if partners.empty:
+        return []
+
+    # 3) 時系列データ読み込み
+    df_time = pd.read_csv(
+        data_dir / "df_combined_data.csv",
+        dtype={"Ticker_int": str},
+        parse_dates=["Date"],
+        engine="python",
+        on_bad_lines="skip",
+    )
+
+    # 4) マージ
+    merged = pd.merge(
+        partners,
+        df_time,
+        left_on="code", right_on="Ticker_int",
+        how="inner"
+    )
+    if merged.empty:
+        return []
+
+    # 5) カラム整形＆日付文字列化
+    out = merged[[
+        "code","name","market","industry_33_category",
+        "Date","Open","High","Low","Close","Volume"
+    ]]
+    out["Date"] = out["Date"].dt.strftime("%Y-%m-%d")
+
+    return out.to_dict(orient="records")

@@ -4,13 +4,20 @@ import react from '@vitejs/plugin-react';
 export default defineConfig({
   plugins: [react()],
   server: {
-    host: true,      // ← これで 0.0.0.0（全インターフェース）で待ち受ける
+    host: true,
     port: 3000,
     proxy: {
       '/api': {
-        target: 'http://backend:8000',  // Docker Compose のサービス名
+        target: 'http://backend:8000',
         changeOrigin: true,
       }
     }
+  },
+  optimizeDeps: {
+    include: [
+      'chart.js',
+      'chartjs-chart-financial',
+      'chartjs-adapter-date-fns'
+    ]
   }
 });

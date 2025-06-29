@@ -13,10 +13,9 @@
     #    - 通常の deps
     RUN npm install react react-dom axios \
         # 型定義（開発用）
-     && npm install --save-dev typescript @types/react @types/react-dom \
-        # その後、残りの package.json 依存も解決
-     && npm install
-    
+     && npm install --save-dev typescript @types/react @types/react-dom chart.js react-chartjs-2 chartjs-chart-financial chartjs-adapter-date-fns date-fns  @amcharts/amcharts4
+        # その後、残りの package.json 依存も解決 
+
     # 3) ソースコード一式をコピー
     COPY . .
     
